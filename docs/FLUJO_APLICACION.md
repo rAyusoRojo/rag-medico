@@ -1,6 +1,6 @@
 # Flujo de ejecución — RAG Médico
 
-> **Mantenimiento:** Este documento debe **actualizarse** cuando cambien el punto de entrada, las rutas HTTP, el caso de uso RAG, la ingesta o las implementaciones de Chroma/OpenAI. Ver sección [Cómo mantener este fichero actualizado](#cómo-mantener-este-fichero-actualizado).
+> **Mantenimiento:** Este documento debe **actualizarse** cuando cambien el punto de entrada (local/Docker), las rutas HTTP, el caso de uso RAG, la ingesta, los scripts `eval_*.py` o las implementaciones de Chroma/OpenAI. Ver sección [Cómo mantener este fichero actualizado](#cómo-mantener-este-fichero-actualizado).
 
 ---
 
@@ -8,7 +8,8 @@
 
 | Cómo se arranca | Qué carga |
 |-----------------|-----------|
-| `uvicorn main:app` (recomendado en `requirements.txt`) | El objeto `app` definido en **`main.py`**. |
+| `uvicorn main:app` (desarrollo; ver `requirements.txt`) | El objeto `app` definido en **`main.py`**. |
+| `docker compose up` (imagen definida en `Dockerfile`) | Mismo `main:app` vía `uvicorn main:app --host 0.0.0.0 --port 8000` (sin `--reload`). |
 
 Secuencia al importar `main`:
 
@@ -16,7 +17,8 @@ Secuencia al importar `main`:
 2. **`main.py`** — Se construye `FastAPI()` y se registran routers:
    - `app.api.routes.ask` → rutas `/ask`
    - `app.api.routes.documents` → rutas `/documents`
-3. **`main.py`** — Ruta `GET /` → función `home()`: devuelve HTML+JS que llama a la API (no pasa por el caso de uso RAG en servidor salvo peticiones fetch del navegador).
+3. **`main.py`** — Ruta `GET /health` → comprobación mínima de vida (`{"status": "ok"}`); usada por el `HEALTHCHECK` del `Dockerfile` y por balanceadores.
+4. **`main.py`** — Ruta `GET /` → función `home()`: devuelve HTML+JS que llama a la API (no pasa por el caso de uso RAG en servidor salvo peticiones fetch del navegador).
 
 No hay otro entrypoint HTTP: todo pasa por `main:app`.
 
@@ -33,7 +35,7 @@ No hay otro entrypoint HTTP: todo pasa por `main:app`.
 | 3 | `app/application/use_cases/ask_question.py` → `AskQuestionUseCase.execute()` | Orquesta RAG: búsqueda vectorial (recall `VECTOR_RECALL_K`) → rerank cross-encoder → recorte a `VECTOR_TOP_K` → contexto numerado → LLM → `AskResponse`. |
 | 4a | `app/infrastructure/vectorstores/chroma_vector_store.py` → `ChromaVectorStoreRepository.search()` | Delega en la capa DB. |
 | 4b | `app/db/vector_store.py` → `ChromaVectorStoreDB.search()` | `embed_query` + `collection.query` en Chroma con filtro `source` si aplica (`n_results` = recall, típ. 20). |
-| 4c | `app/infrastructure/embeddings/openai_embedder.py` o `local_embedder.py` | Embedding de la pregunta (OpenAI si hay `OPENAI_API_KEY`, si no hash local). |
+| 4c | `app/infrastructure/embeddings/openai_embedder.py` o `local_embedder.py` | Embedding de la pregunta: **OpenAI** si `OPENAI_API_KEY` (tras `strip()`) no está vacía; si no, **`LocalHashEmbedder`** (misma lógica que en `ChromaVectorStoreRepository._build_embedder()`). |
 | 4d | `app/db/chroma_client.py` → `get_chroma_collection()` | Colección acorde a nombre construido en el repositorio (debe coincidir con la ingesta). |
 | 4e | `app/infrastructure/reranking/local_cross_encoder_reranker.py` → `LocalCrossEncoderReranker.rerank()` | Cross-encoder local (`sentence-transformers`, por defecto español STS `nflechas/spanish-BERT-sts` vía `CROSS_ENCODER_MODEL`; opcional MMARCO multilingüe); ordena candidatos y deja los mejores `VECTOR_TOP_K`. |
 | 5 | `app/infrastructure/llm/openai_llm_repository.py` → `OpenAILLMRepository.generate()` | Chat completions con contexto y prompts de citas. |
@@ -56,7 +58,15 @@ No hay otro entrypoint HTTP: todo pasa por `main:app`.
 
 ---
 
-### 2.3 `GET /`
+### 2.3 `GET /health`
+
+| Fichero → método | Qué hace |
+|------------------|----------|
+| `main.py` → `health()` | Respuesta JSON fija `{"status": "ok"}`; no toca Chroma ni OpenAI. |
+
+---
+
+### 2.4 `GET /`
 
 | Fichero → método | Qué hace |
 |------------------|----------|
@@ -87,12 +97,26 @@ Al resolver `Depends(get_rag_service)` o el repositorio vectorial:
 
 **Tiempos (ingesta):** con `TIMING_LOGS_ENABLED`, un fichero `ingest_<timestamp>.log` en `TIMING_LOGS_PATH` con pasos: `chroma_get_collection`, `listar_ficheros_candidatos`, `escaneo_extraccion_chunking`, `openai_embeddings_embed_texts`, `chroma_upsert_batches`, `export_eval_artifacts`, y resumen final (`chunks_indexed`, `ingestion_batch_id`, `total_wall_ms`).
 
+**Ejecución típica en contenedor:** `docker compose exec rag-medico python app/services/ingest.py` (el servicio se llama `rag-medico` en `docker-compose.yml`).
+
 ---
 
-## 5. Mapa de capas (referencia rápida)
+## 5. Evaluación (procesos aparte, no son la API HTTP)
+
+| Orden | Fichero | Qué hace |
+|-------|---------|----------|
+| 1 | `app/services/eval_generate_golden.py` | Genera preguntas sintéticas a partir de chunks (OpenAI) → artefactos bajo `EVAL_ARTIFACTS_PATH` (p. ej. `golden_dataset.json`). |
+| 2 | `app/services/eval_retrieval.py` | Mide recuperación (Hit@K, MRR, precisión) frente al golden; opcionalmente con/sin rerank. |
+| 3 | `app/services/eval_end_to_end.py` | Ejecuta pipeline RAG completo y puntúa con LLM-as-judge (faithfulness, relevancia, correctness). |
+
+No registran rutas en FastAPI: se lanzan como scripts CLI según su `if __name__ == "__main__"` / argumentos.
+
+---
+
+## 6. Mapa de capas (referencia rápida)
 
 ```
-main.py (FastAPI, rutas /)
+main.py (FastAPI: `/`, `/health`, routers `/ask` y `/documents`)
     └── app/api/routes/*.py
             └── app/services/rag_service.py
                     └── app/application/use_cases/ask_question.py
@@ -101,16 +125,17 @@ main.py (FastAPI, rutas /)
                             ├── app/infrastructure/reranking → cross-encoder local
                             └── app/infrastructure/llm → OpenAI
 app/services/ingest.py (CLI / batch) → chroma + embeddings + ingest_eval_export.py
+app/services/eval_*.py (CLI) → golden, métricas de retrieval, evaluación e2e
 app/core/config.py (Settings) — usado casi en todas las capas
 ```
 
 ---
 
-## 6. Dominio y modelos (sin I/O directo)
+## 7. Dominio y modelos (sin I/O directo)
 
 | Fichero | Rol |
 |---------|-----|
-| `app/domain/entities/retrieved_chunk.py` | Fragmento recuperado (texto, source, página). |
+| `app/domain/entities/retrieved_chunk.py` | Fragmento recuperado (`content`, `source`, `page`, `chunk_id` opcional desde Chroma). |
 | `app/domain/repositories/vector_store_repository.py` | Contrato búsqueda + listar fuentes. |
 | `app/domain/repositories/reranker_repository.py` | Contrato `rerank(query, chunks, top_k)`. |
 | `app/domain/repositories/llm_repository.py` | Contrato `generate(question, context)`. |
@@ -118,7 +143,7 @@ app/core/config.py (Settings) — usado casi en todas las capas
 
 ---
 
-## 7. Tests
+## 8. Tests
 
 | Fichero | Qué ejercita |
 |---------|--------------|
@@ -129,10 +154,10 @@ app/core/config.py (Settings) — usado casi en todas las capas
 
 ## Cómo mantener este fichero actualizado
 
-1. **Cuándo editar:** al añadir o cambiar rutas en `main.py` o `app/api/`, al cambiar `AskQuestionUseCase`, al cambiar ingesta (`ingest.py`), al cambiar cliente Chroma/embeddings/LLM, o al introducir un nuevo entrypoint.
-2. **Qué actualizar:** tablas de flujo, nombres de métodos, y la sección 5 si cambia la estructura de carpetas.
-3. **Herramientas:** en este repo existe la regla Cursor `.cursor/rules/actualizar-flujo-aplicacion.mdc` para recordar esta actualización al tocar `app/**/*.py` o `main.py`.
+1. **Cuándo editar:** al añadir o cambiar rutas en `main.py` o `app/api/`, al cambiar `AskQuestionUseCase`, al cambiar ingesta (`ingest.py`), scripts `eval_*.py`, al cambiar cliente Chroma/embeddings/LLM, Dockerfile/compose, o al introducir un nuevo entrypoint.
+2. **Qué actualizar:** tablas de flujo, nombres de métodos, y el mapa de capas si cambia la estructura de carpetas.
+3. **Herramientas:** puedes añadir en Cursor una regla bajo `.cursor/rules/` que recuerde actualizar este documento al tocar `app/**/*.py` o `main.py` (no es obligatorio que el fichero exista en el repo).
 
 *Última revisión alineada con el código del repositorio: actualizar esta fecha cuando se modifique el documento.*
 
-**Fecha de documento:** 2026-04-12 (actualizado: `spec.md`, `RERANKING_ENABLED`, cross-encoder español por defecto, tests con `NoOpReranker`)
+**Fecha de documento:** 2026-04-13 — Docker como arranque, `GET /health`, `chunk_id` en `RetrievedChunk`, scripts `eval_generate_golden` / `eval_retrieval` / `eval_end_to_end`, ingesta en contenedor, prompts LLM reforzados (ver `openai_llm_repository.py`); ver también `spec.md` y `CHUNK_SIZE` / `CHUNK_OVERLAP` en `app/core/config.py`.
