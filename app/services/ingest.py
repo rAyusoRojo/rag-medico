@@ -279,3 +279,9 @@ def ingest_documents() -> int:
 if __name__ == "__main__":
     ingested = ingest_documents()
     print(f"Ingestion completada. Chunks indexados: {ingested}")
+    if ingested > 0:
+        print(
+            "Nota: Chroma en disco no se refresca en el proceso de la API si ya estaba "
+            "en marcha. Reinicia el contenedor para que /ask use el indice nuevo:\n"
+            "  docker compose restart rag-medico"
+        )
