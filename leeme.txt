@@ -1,0 +1,5 @@
+Arrancar servidor web
+    uvicorn main:app --reload
+
+Ingesta de documentos
+    python app/services/ingest.py

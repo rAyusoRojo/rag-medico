@@ -1,0 +1,14 @@
+services:
+  rag-medico:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - chroma-data:/app/.chroma
+      - ./data/documents:/app/data/documents:ro
+    restart: unless-stopped
+
+volumes:
+  chroma-data:

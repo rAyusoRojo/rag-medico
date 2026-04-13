@@ -1,0 +1,27 @@
+# =============================================================================
+# RAG Médico — dependencias Python (instalar: pip install -r requirements.txt)
+# Especificación alineada con spec.md y docs/FLUJO_APLICACION.md
+# =============================================================================
+
+# --- API HTTP ---
+fastapi>=0.111.0
+uvicorn>=0.30.0
+
+# --- Configuración (.env / variables de entorno) ---
+pydantic>=2.7.0
+pydantic-settings>=2.3.0
+python-dotenv>=1.0.1
+
+# --- RAG: LLM (OpenAI) e índice vectorial (Chroma) ---
+openai>=2.31.0
+chromadb>=0.5.0
+
+# --- Ingesta de documentos (PDF, Word) — script app/services/ingest.py ---
+pypdf>=6.0.0
+python-docx>=1.1.2
+
+# --- Reranking local (cross-encoder vía Hugging Face; instala torch y dependencias asociadas) ---
+sentence-transformers>=3.0.0
+
+# --- Tests ---
+pytest>=9.0.0

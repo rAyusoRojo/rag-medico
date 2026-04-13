@@ -1,0 +1,12 @@
+.env
+.chroma/
+data/eval/
+data/logs/
+data/documents/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.cursor/
+PDFSSSS/
